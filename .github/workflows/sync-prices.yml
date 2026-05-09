@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Sync prices from TCGCSV to Supabase
         run: |
-          response=$(curl -s -w "\n%{http_code}" -X POST \
+          response=$(curl -s -L -w "\n%{http_code}" -X POST \
             "${{ secrets.APP_URL }}/api/sync" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}")
