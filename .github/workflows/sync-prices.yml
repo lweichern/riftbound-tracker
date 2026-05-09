@@ -2,7 +2,7 @@ name: Daily Price Sync
 
 on:
   schedule:
-    - cron: "0 6 * * *" # 6 AM UTC daily
+    - cron: "0 0 * * *" # 8 AM MYT (UTC+8) daily
   workflow_dispatch: # allow manual trigger
 
 jobs:
