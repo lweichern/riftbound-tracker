@@ -1,7 +1,7 @@
 "use client";
 
 import { Card, PriceHistoryEntry, RIFTBOUND_SETS } from "@/lib/types";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import {
   LineChart,
   Line,
@@ -25,6 +25,26 @@ export default function PriceChartModal({ card, onClose }: PriceChartModalProps)
   const { formatPrice, convert, symbol } = useCurrency();
 
   const setName = RIFTBOUND_SETS.find((s) => s.groupId === card.groupId)?.name ?? "";
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [tilt, setTilt] = useState({ rotateX: 0, rotateY: 0, glareX: 50, glareY: 50 });
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const el = cardRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    setTilt({
+      rotateX: (0.5 - y) * 20,
+      rotateY: (x - 0.5) * 20,
+      glareX: x * 100,
+      glareY: y * 100,
+    });
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    setTilt({ rotateX: 0, rotateY: 0, glareX: 50, glareY: 50 });
+  }, []);
 
   useEffect(() => {
     fetch(`/api/price-history?productId=${card.productId}&days=90`)
@@ -76,21 +96,45 @@ export default function PriceChartModal({ card, onClose }: PriceChartModalProps)
           </div>
 
           <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
-            <div className="sm:w-48 shrink-0 relative">
-              {card.imageUrl ? (
-                <img
-                  src={card.imageUrl}
-                  alt={card.cleanName}
-                  className="w-full rounded-lg"
-                  onError={(e) => {
-                    const target = e.currentTarget;
-                    target.style.display = "none";
-                    target.parentElement!.querySelector("[data-placeholder]")!.classList.remove("hidden");
+            <div className="sm:w-48 shrink-0" style={{ perspective: "600px" }}>
+              <div
+                ref={cardRef}
+                onMouseMove={handleMouseMove}
+                onMouseLeave={handleMouseLeave}
+                className="relative rounded-lg overflow-hidden"
+                style={{
+                  transform: `rotateX(${tilt.rotateX}deg) rotateY(${tilt.rotateY}deg)`,
+                  transition: tilt.rotateX === 0 && tilt.rotateY === 0 ? "transform 0.4s ease-out" : "transform 0.1s ease-out",
+                  transformStyle: "preserve-3d",
+                }}
+              >
+                {card.imageUrl ? (
+                  <img
+                    src={card.imageUrl}
+                    alt={card.cleanName}
+                    className="w-full rounded-lg"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      target.style.display = "none";
+                      target.parentElement!.querySelector("[data-placeholder]")!.classList.remove("hidden");
+                    }}
+                  />
+                ) : null}
+                <div data-placeholder className={`w-full aspect-5/7 bg-gray-800 rounded-lg flex items-center justify-center text-gray-600 ${card.imageUrl ? "hidden" : ""}`}>
+                  No Image
+                </div>
+                <div
+                  className="absolute inset-0 rounded-lg pointer-events-none"
+                  style={{
+                    background: `radial-gradient(circle at ${tilt.glareX}% ${tilt.glareY}%, rgba(255,255,255,0.25) 0%, rgba(255,255,255,0.05) 40%, transparent 70%)`,
                   }}
                 />
-              ) : null}
-              <div data-placeholder className={`w-full aspect-[5/7] bg-gray-800 rounded-lg flex items-center justify-center text-gray-600 ${card.imageUrl ? "hidden" : ""}`}>
-                No Image
+                <div
+                  className="absolute inset-0 rounded-lg pointer-events-none opacity-30"
+                  style={{
+                    background: `linear-gradient(${105 + tilt.rotateY * 2}deg, transparent 20%, rgba(255,255,255,0.1) 45%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0.1) 55%, transparent 80%)`,
+                  }}
+                />
               </div>
             </div>
 
