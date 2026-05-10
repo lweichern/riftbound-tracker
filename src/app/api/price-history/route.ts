@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPriceHistory } from "@/lib/supabase-db";
+import { getPriceHistory } from "@/lib/db";
 
 export async function GET(request: NextRequest) {
   const productId = request.nextUrl.searchParams.get("productId");

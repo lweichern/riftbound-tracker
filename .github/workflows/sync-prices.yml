@@ -9,7 +9,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync prices from TCGCSV to Supabase
+      - name: Sync prices from TCGCSV to Turso
         run: |
           response=$(curl -s -L -w "\n%{http_code}" -X POST \
             "${{ secrets.APP_URL }}/api/sync" \

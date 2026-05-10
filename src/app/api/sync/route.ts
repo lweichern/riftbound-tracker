@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCardsForSet } from "@/lib/tcgcsv";
-import { upsertCards, insertPriceSnapshots } from "@/lib/supabase-db";
+import { upsertCards, insertPriceSnapshots, initializeDb } from "@/lib/db";
 import { RIFTBOUND_SETS } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    await initializeDb();
     let totalCards = 0;
     let totalPrices = 0;
 

@@ -1,23 +1,21 @@
-import Database from "better-sqlite3";
-import path from "path";
+import { createClient, Client } from "@libsql/client";
 import { Card, PriceHistoryEntry } from "./types";
 
-const DB_PATH = path.join(process.cwd(), "riftbound.db");
+let db: Client | null = null;
 
-let db: Database.Database | null = null;
-
-function getDb(): Database.Database {
+function getDb(): Client {
   if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("foreign_keys = ON");
-    initializeDb(db);
+    db = createClient({
+      url: process.env.TURSO_DATABASE_URL!,
+      authToken: process.env.TURSO_AUTH_TOKEN,
+    });
   }
   return db;
 }
 
-function initializeDb(db: Database.Database) {
-  db.exec(`
+export async function initializeDb() {
+  const db = getDb();
+  await db.executeMultiple(`
     CREATE TABLE IF NOT EXISTS cards (
       product_id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -66,9 +64,9 @@ function initializeDb(db: Database.Database) {
   `);
 }
 
-export function upsertCard(card: Card) {
+export async function upsertCards(cards: Card[]) {
   const db = getDb();
-  db.prepare(`
+  const stmt = `
     INSERT INTO cards (product_id, name, clean_name, image_url, group_id, rarity, card_type, number, domain, tcgplayer_url)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(product_id) DO UPDATE SET
@@ -80,51 +78,82 @@ export function upsertCard(card: Card) {
       number = excluded.number,
       domain = excluded.domain,
       tcgplayer_url = excluded.tcgplayer_url
-  `).run(
-    card.productId,
-    card.name,
-    card.cleanName,
-    card.imageUrl,
-    card.groupId,
-    card.rarity,
-    card.cardType,
-    card.number,
-    card.domain,
-    card.url
-  );
+  `;
+
+  const batch = cards.map((card) => ({
+    sql: stmt,
+    args: [
+      card.productId,
+      card.name,
+      card.cleanName,
+      card.imageUrl,
+      card.groupId,
+      card.rarity,
+      card.cardType,
+      card.number,
+      card.domain,
+      card.url,
+    ],
+  }));
+
+  await db.batch(batch);
 }
 
-export function insertPriceSnapshot(
-  productId: number,
-  subType: string,
-  lowPrice: number | null,
-  midPrice: number | null,
-  highPrice: number | null,
-  marketPrice: number | null,
-  directLowPrice: number | null
+export async function insertPriceSnapshots(
+  snapshots: {
+    productId: number;
+    subType: string;
+    lowPrice: number | null;
+    midPrice: number | null;
+    highPrice: number | null;
+    marketPrice: number | null;
+    directLowPrice: number | null;
+  }[]
 ) {
   const db = getDb();
-  db.prepare(`
-    INSERT OR IGNORE INTO price_history (product_id, sub_type, low_price, mid_price, high_price, market_price, direct_low_price)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(productId, subType, lowPrice, midPrice, highPrice, marketPrice, directLowPrice);
+  const today = new Date().toISOString().split("T")[0];
+  const stmt = `
+    INSERT OR IGNORE INTO price_history (product_id, sub_type, low_price, mid_price, high_price, market_price, direct_low_price, recorded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  const batch = snapshots.map((s) => ({
+    sql: stmt,
+    args: [
+      s.productId,
+      s.subType,
+      s.lowPrice,
+      s.midPrice,
+      s.highPrice,
+      s.marketPrice,
+      s.directLowPrice,
+      today,
+    ],
+  }));
+
+  const batchSize = 500;
+  for (let i = 0; i < batch.length; i += batchSize) {
+    await db.batch(batch.slice(i, i + batchSize));
+  }
 }
 
-export function getPriceHistory(
+export async function getPriceHistory(
   productId: number,
   subType?: string,
   days: number = 30
-): PriceHistoryEntry[] {
+): Promise<PriceHistoryEntry[]> {
   const db = getDb();
-  const query = subType
-    ? `SELECT * FROM price_history WHERE product_id = ? AND sub_type = ? AND recorded_at >= date('now', '-${days} days') ORDER BY recorded_at ASC`
-    : `SELECT * FROM price_history WHERE product_id = ? AND recorded_at >= date('now', '-${days} days') ORDER BY recorded_at ASC`;
+  const sql = subType
+    ? `SELECT * FROM price_history WHERE product_id = ? AND sub_type = ? AND recorded_at >= date('now', '-' || ? || ' days') ORDER BY recorded_at ASC`
+    : `SELECT * FROM price_history WHERE product_id = ? AND recorded_at >= date('now', '-' || ? || ' days') ORDER BY recorded_at ASC`;
 
-  const rows = subType
-    ? db.prepare(query).all(productId, subType)
-    : db.prepare(query).all(productId);
+  const args = subType
+    ? [productId, subType, days]
+    : [productId, days];
 
-  return (rows as Array<Record<string, unknown>>).map((row) => ({
+  const result = await db.execute({ sql, args });
+
+  return result.rows.map((row) => ({
     productId: row.product_id as number,
     subType: row.sub_type as string,
     lowPrice: row.low_price as number | null,
@@ -136,31 +165,37 @@ export function getPriceHistory(
   }));
 }
 
-export function saveDeck(name: string, cards: { productId: number; quantity: number }[]): number {
+export async function saveDeck(
+  name: string,
+  cards: { productId: number; quantity: number }[]
+): Promise<number> {
   const db = getDb();
-  const insertDeck = db.prepare("INSERT INTO decks (name) VALUES (?)");
-  const insertCard = db.prepare(
-    "INSERT INTO deck_cards (deck_id, product_id, quantity) VALUES (?, ?, ?)"
-  );
-
-  const transaction = db.transaction(() => {
-    const result = insertDeck.run(name);
-    const deckId = result.lastInsertRowid as number;
-    for (const card of cards) {
-      insertCard.run(deckId, card.productId, card.quantity);
-    }
-    return deckId;
+  const insertDeck = await db.execute({
+    sql: "INSERT INTO decks (name) VALUES (?)",
+    args: [name],
   });
 
-  return transaction();
+  const deckId = Number(insertDeck.lastInsertRowid);
+  const batch = cards.map((card) => ({
+    sql: "INSERT INTO deck_cards (deck_id, product_id, quantity) VALUES (?, ?, ?)",
+    args: [deckId, card.productId, card.quantity],
+  }));
+
+  await db.batch(batch);
+  return deckId;
 }
 
-export function getAllCards(): Array<{ product_id: number; name: string; clean_name: string; group_id: number }> {
+export async function getAllCards(): Promise<
+  Array<{ product_id: number; name: string; clean_name: string; group_id: number }>
+> {
   const db = getDb();
-  return db.prepare("SELECT product_id, name, clean_name, group_id FROM cards").all() as Array<{
-    product_id: number;
-    name: string;
-    clean_name: string;
-    group_id: number;
-  }>;
+  const result = await db.execute(
+    "SELECT product_id, name, clean_name, group_id FROM cards"
+  );
+  return result.rows.map((row) => ({
+    product_id: row.product_id as number,
+    name: row.name as string,
+    clean_name: row.clean_name as string,
+    group_id: row.group_id as number,
+  }));
 }
